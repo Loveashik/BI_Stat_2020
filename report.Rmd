@@ -1,0 +1,229 @@
+---
+title: "Project 2"
+output: html_document
+---
+
+
+##                 "Boston houses prices"
+
+```{r setup, echo = FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+Boston is a dataset with information of areas around Boston city that contains such observations as weighted mean of distances to five Boston employment centers (dis), lower status of the population (lstat), average number of rooms per dwelling (rm) and others. We will use linear regression to predict the house prices (medv) using all these characteristics.
+
+## 1. Preparing to work
+#### 1.1 Libraries
+
+
+```{r packages, message = FALSE, warning=FALSE}
+if(!require("ggcorrplot")) install.packages("ggcorrplot")
+if(!require("ggplot2")) install.packages("ggplot2")
+if(!require("cowplot")) install.packages("cowplot")
+if(!require("GGally")) install.packages("GGally")
+if(!require("MASS")) install.packages("MASS")
+if(!require("car")) install.packages("car")
+```
+
+```{r libs, echo = TRUE, message = FALSE, warning=FALSE}
+library(ggcorrplot)
+library(ggplot2)
+library(cowplot)
+library(GGally)
+library(dplyr)
+library(MASS)
+library(car)
+```
+
+#### 1.2 Data compilation
+```{r data}
+data <- Boston
+str(data)
+```
+#### 1.3 Initial data preparation
+```{r prepare data}
+
+data[, !names(data) %in% c("medv", "chas")] <- scale(data[, !names(data) %in% c("medv", "chas")])
+data$chas <- factor(data$chas)
+
+
+```
+It was decided to make "chas" predictor as factor as it has 2 gradations - "0" and "1". We also consider rad as numeric predictor as it has a lot of gradations and they are well explained as the numeric feature - the distance to roads can compared so it is not just label.
+The numeric predictors were standardized on this step to proceed further analysis.
+
+#### 1.4 Checking for missing values
+```{r isna, echo = TRUE}
+sum(is.na(data))
+```
+
+## 2. Start the analysis
+
+#### 2.1 Making correlation plot
+First of all we can make a correlation map to look at the dependencies between all of the variables:
+
+```{r}
+dat_wh_chas <- data %>% select(-chas)
+corr <- round(cor(dat_wh_chas), 3)  # Compute a correlation matrix
+p_mat <- cor_pmat(dat_wh_chas) # Compute a matrix of correlation p-values
+ggcorrplot(corr, hc.order = TRUE, type = "lower", method = "circle", p.mat = p_mat,
+   outline.col = "white",
+   ggtheme = ggplot2::theme_bw,
+   colors = c("#6D9EC1", "white", "#E46726"))
+```
+
+As shown on the map above, medv has a strong negative correlation with lstat and a strong positive correlation with rm. Also, we can notice that tax and rad strongly correlate with each other, so one of them can be safely excluded from our model.
+
+#### 2.3 Creating full model
+
+First of all we shall make a simple linear regression model that includes all of the predictors:
+```{r model}
+model_full <- lm(data=data, medv ~. )
+summary(model_full)
+
+```
+Adjusted R-squared for our full model is 0.7338, which means that the full linear model explains more than 70% of the deviance. 
+
+Sorted coefficients by abs:
+```{r coefs}
+sort(abs(model_full$coefficients))
+```
+
+The main predictors for our model are lstat, dis, chas and rm.
+
+
+#### 2.4 Check for multicollinearity
+```{r vif, echo=TRUE}
+vif(model_full)
+```
+We can see that the biggest VIF`s are for rad, tax and indus predictors.
+
+
+
+#### 2.5 Check for outliers
+
+```{r diag}
+
+mod_diag <- fortify(model_full)
+ggplot(mod_diag, aes(x = 1:nrow(mod_diag), y = .cooksd)) +
+    geom_bar(stat = 'identity') + theme_bw()
+
+qqPlot(model_full, id=FALSE) 
+
+
+```
+
+
+The cook`s distances plot shows that there are no outliers. The distribution of residues is slightly different from normal.
+
+#### 2.6 anova for our model
+```{r anova}
+anova(model_full)
+```
+anova results suggest that rad, age and nox are not significant for our model. We can show the dependence between them and medw using pairs:
+
+```{r}
+
+ggpairs(data = data[, names(data) %in% c("medv", "age", "nox","rad")]) +
+  theme_bw()
+```
+
+These predictors don`t show dependence with medw (bottom line), so when optimizing our model we can drop them.
+
+```{r}
+
+```
+
+
+#### 2.7 Building a graph showing the dependence between medv and the biggest(abs) predictor
+In the full model lstat had the biggest coefficient, so we can visualise it. It can easily be noticed that this predictor in non-linear dependence with medv, so lets see how we can fix it with square function (on the right): 
+
+```{r}
+model_lstat <- lm(medv~lstat, data = data)
+P1 <- ggplot(aes(x = lstat, y = medv), data = data) +
+   geom_point() + geom_point(aes(x = lstat, y = .fitted), colour = "red", data = model_lstat)
+
+model_lstat <- lm(medv~lstat+I(lstat^2), data = data)
+predicted_df <- data.frame(medv_pred = predict(model_lstat, data), lstat=data$lstat)
+P2 <- ggplot(aes(x = lstat, y = medv), data = data) +
+   geom_point() + geom_point( data = predicted_df, aes(y = medv_pred, x = lstat), colour = "red")
+
+theme_set(theme_bw())
+plot_grid(P1,P2)
+
+```
+
+
+The graph that is on the right side seems to fit much better to the data.
+We can keep it in mind when building the best model.
+
+
+## 3. Creating the best model
+
+After we analyzed the full model, we can go deeper and try to find the best way to predict median value of owner-occupied homes (medv) using our predictors. One of the ways to make a good model is a step-by-step selection, where we start from our full model and go backwards redusing the amount of predictors with the biggest AIC`s:
+
+```{r step}
+backw_mod <- step(model_full, direction = "backward")
+summary(backw_mod)
+```
+
+preparing anova analysis for the model:
+```{r anova for step model}
+anova(backw_mod)
+```
+
+We now can remove rad as it is not significant such as other predictors.
+
+```{r -rad, echo=TRUE}
+new_model <- update(backw_mod, .~.-rad)
+summary(new_model)
+```
+
+Going on with simplifying the model we can notice that the coefficient for full-value property-tax rate per \$10,000 (tax) is small and not significant so it can be dropped.
+
+```{r, -tax, echo=TRUE}
+new_model <- update(new_model, .~.-tax)
+summary(new_model)
+```
+
+Adjusted R-squared for the model is 0.7239. The per capita crime rate by town is less significant than others. Lets look what will change  if we remove this predictor from our model:
+
+```{r, -crim, echo=TRUE}
+new_model <- update(new_model, .~.-crim)
+summary(new_model)
+```
+
+Adjusted R-squared for the model is 0.7222 which is 0.017 less than for the model with crim predictor included. It seems to be strange that the level of criminality doesn't have a great effect on the house prices, but this feature can be special to Boston. Lets look at the graphical dependence between this two varibles:
+
+```{r}
+ggplot(aes(x = crim, y = medv), data = data) +
+  geom_point() + theme_bw()
+```
+
+We see that when the criminality rate is low, the house prices vary significantly, but with the growth of criminality score there are much less of the data about prices, so we can't make a clear dependence from this observations. Small negative correlation is observed but it doesn't play a big role in our model so we can for now drop this predictor.
+
+In the second part of the investigation we showed that the most influential predictor in the model is lower status of the population (lstat). This variable sums the level of poverty and education for people that live in certain district.
+
+It was shown that square function fits data on a good level. We can now add this dependence to our new model:
+
+```{r, echo = TRUE, +lstat}
+best_model <- update(new_model, .~.+I(lstat^2))
+best_model <- update(best_model, .~.-zn) #as its significance is now lower than 0.1
+summary(best_model)
+```
+
+The final model is the following:  lm(formula = medv ~ chas + nox + rm + dis + ptratio + black + 
+    lstat + I(lstat^2), data = data)
+We suggest that the best parameters that must be kept in mind when planning a house building are:
+   1. the status of the district population (lstat, best)
+   2. average number of rooms per dwelling (rm)
+   3. weighted mean of distances to five Boston employment centers (dis)
+   4. nitrogen oxides concentration (nox)
+   5. pupil-teacher ratio by town (ptratio)
+   6. the proportion of blacks by town (black)
+   7. bound to Charles River (chas)
+   
+## 4. Results
+We examined a dataset of different features of Boston districts and our goal was to predict the house prices based on the other characteristics. We examined the dataset and built the full model for medv variable.  We diagnosed the model and showed that it was precise enough to use linear model to make predictions, as it explained more than 70% of the deviance. however it was suggested that we can optimize our model and find those features that play the most important role and drop those features which are not significant.
+We created a new model using backwards step-by-step algorithm and it showed that such features as proportion of owner-occupied units built prior to 1940 (age), proportion of non-retail business acres per town (indus) index of accessibility to radial highways (rad) and full-value property-tax rate (tax) were dropped as they are not significant for predicting house price.
+Crime rate by town (crim) was dropped due to its unclear dependence with house prices, we suggest that more data is needed to include this predictor as it now has very high level of heteroscedasticity.
+
+All of the other predictors are significant in prediction of the average house costs and it is necessary to take them into account when choosing a place and making a plan for the new building. 
