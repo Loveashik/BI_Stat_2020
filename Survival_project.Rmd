@@ -1,0 +1,196 @@
+---
+title: "Mini project on survival analysis"
+author: "D.Khaleneva"
+date: "3/8/2021"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+```{r libs, include=FALSE}
+library(survival)
+library(survminer)
+library(ranger)
+library(ggplot2)
+library(dplyr)
+library(ggfortify)
+library(coin)
+```
+
+## EDA of ovarian dataset
+
+Let's look at the structure of the dataset:
+
+```{r data}
+data(ovarian)
+str(ovarian)
+```
+
+Description of the data:
+Survival in a randomised trial comparing two treatments for ovarian cancer
+
+* futime:	survival or censoring time
+* fustat:	censoring status
+* age:	in years
+* resid.ds:	residual disease present (1=no,2=yes)
+* rx:	treatment group
+* ecog.ps:	ECOG performance status (1 is better than 2)
+
+Check for NAs:
+
+```{r isna}
+sum(is.na(ovarian))
+```
+No missing data in dataset
+
+```{r age_hist}
+ggplot(data=ovarian) + geom_histogram(aes(x=age),binwidth=2, bins = 10, fill='darkorange')+theme_bw()+labs(title = 'histogram of age')
+```
+
+The distribution of age is needed to make this parameter a factor with tho levels (young/old) in further analysis.
+Lets make the new data with fixed columns:  
+
+```{r ova}
+ova <- mutate(ovarian, age_gr = ifelse((age < 55), "young", "old"),
+              age_gr = factor(age_gr),
+              ecog = factor(ecog.ps, labels=c("good","bad")),
+              rx = factor(rx,labels=c("group 1","group 2")),
+              resids = factor(resid.ds,labels=c("No","Yes")))
+```
+
+## Kaplan-Meier curves
+
+Let us estimate the probability of death of a particular individual depending on the time t. To begin with, let's get the time interval within which we will assess the survival rate. 
+
+```{r Kaplan Meier Survival Curve}
+time_scale <- with(ova, Surv(futime, fustat))
+head(time_scale,30)
+```
+Next, we build a linear model that accounts for the factor-based change in survival over time: 
+
+```{r surv_fit, echo=FALSE}
+base_km <- survfit(Surv(futime, fustat) ~ 1, data=ovarian)
+summary(base_km, times = c(1,30,60,90*(1:10)))
+autoplot(base_km, title = "Base Caplan-Meyer curve")+theme_bw()
+
+```
+
+## Making groups
+
+I made the following groups:
+
+* Treatment curve
+* Age curve
+* Ecog curve
+* Resid curve
+* Curve for multiple factors
+
+
+### Treatment curve
+
+Stratification the curve depending on the treatment regimen rx that patients were assigned to.
+
+```{r surv_rx}
+surv_object <- Surv(time = ovarian$futime, event = ovarian$fustat)
+
+surviver_rx <- survfit(surv_object ~ rx, data=ova)
+autoplot(surviver_rx, title = "Treatment curve")+theme_bw()
+```
+
+### Age curve
+
+```{r age surv}
+age_surv <- survfit(surv_object ~ age_gr, data=ova)
+autoplot(age_surv)+theme_bw()
+```
+
+### Ecog curve
+
+```{r ecog surv}
+age_surv <- survfit(surv_object ~ ecog, data=ova)
+autoplot(age_surv)+theme_bw()
+```
+
+### Resid curve
+
+```{r resid_surv}
+
+resid_surv <- survfit(surv_object ~ resid.ds, data = ova)
+autoplot(resid_surv) +theme_bw()
+```
+
+
+### Curve for all groups
+
+```{r mix, echo=FALSE}
+ova_mix <- ova
+ova_mix$hyb_fact <- paste(ova_mix$age_gr, ova_mix$rx, ova_mix$ecog)
+ova_mix$hyb_fact <- as.factor(ova_mix$hyb_fact)
+ova_mix_fit <- survfit(surv_object ~ hyb_fact, data=ova_mix)
+autoplot(ova_mix_fit)+theme_bw()
+```
+
+Here we see that age group affects on the survival pattern, but on this plot we cannot properly distinguish all groups. We should prepare another analysis to compare them
+
+## Comparing groups with log-rank test
+
+log-rank test is another way to assess survival. It allows you to compare whether there is a difference in survival between groups. 
+
+```{r log-rank rx}
+logrank_test(surv_object ~ rx, data = ova_mix)
+```
+```{r log-rank ecog}
+logrank_test(surv_object ~ ecog, data = ova_mix)
+```
+
+```{r log-rank age, echo=FALSE}
+logrank_test(surv_object ~ age_gr, data = ova_mix)
+```
+
+```{r log-rank resids, echo=FALSE}
+logrank_test(surv_object ~ resids, data = ova_mix)
+```
+
+p-value close to 0.01 is at the age group. However other p-values show the insignificance of ecog and rx groups. resids can be slightly significant if we assume that the p-value must be below 0.05 (although for this group we see p-val=0.054)
+
+## Analysis of factors influencing risk (Cox model)
+
+```{r Cox model, message= FALSE}
+cox <- coxph(surv_object ~ age_gr+rx+resids , data = ova)
+summary(cox)
+
+cox_fit <- survfit(cox)
+autoplot(cox_fit)+theme_bw()
+```
+
+The cox model does not reflect the relationship of variables and therefore is not very reliable for any conclusions, and the analysis of covariatesis needed:
+
+```{r map, message=FALSE, warning=FALSE, echo=FALSE}
+map <- aareg(surv_object ~ age_gr+rx+resids+ecog , data = ova)
+autoplot(map)+theme_bw()
+```
+
+This analysis is needed to find the relationship between variables, as well as to see how variables change over time. If a variable changes much, we can`t be sure to trust the results in the analysis.
+
+## Cox proportional hazards
+
+```{r Risks}
+# Fit a Cox proportional hazards model
+
+fit.coxph <- coxph(surv_object ~ rx + resids + age_gr + ecog, 
+                   data = ova)
+ggforest(fit.coxph, data = ova)+theme_bw()
+```
+
+Coxph plot shows hazard ratios (HR) which are derived from the model for all covariates that we included in the formula in coxph. HR > 1 indicates an increased risk of death (according to the definition of h(t)) if a specific condition is met by a patient. An HR < 1, on the other hand, indicates a decreased risk. 
+p-value below indicates the level of significance of the criteria.
+
+## Conclusion
+
+Using the Kaplan-Meier tests, it was shown that the effect of the age on patients has a p-value close to statistically significant (p <0.05). Log-rank tests show a similar value. On the other hand, the rest of the variables turn out to be insignificant due to log-rank tests.
+The Hazard ratio shows that the risk of dying for patients in the second treatment group (rx, group 2) is statistically significantly lower than for those in the first. The age also significantly affects the surviving curve (young patients survive longer).
+Risk factors in terms of their influence, arranged in descending order: age, treatment (rx), relapse (resids), ecog.
+
+## References
+
+Edmunson, J.H., Fleming, T.R., Decker, D.G., Malkasian, G.D., Jefferies, J.A., Webb, M.J., and Kvols, L.K., Different Chemotherapeutic Sensitivities and Host Factors Affecting Prognosis in Advanced Ovarian Carcinoma vs. Minimal Residual Disease. Cancer Treatment Reports, 63:241-47, 1979.
